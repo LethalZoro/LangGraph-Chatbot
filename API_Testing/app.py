@@ -10,6 +10,7 @@ import asyncio
 import socketio
 import uvicorn
 
+
 dotenv.load_dotenv()
 
 message_event = asyncio.Event()
@@ -753,11 +754,18 @@ state: ShippingWorkflowState = {
     "less_3": less_3
 }
 
-sio = socketio.AsyncServer(async_mode='asgi')
+# sio = socketio.AsyncServer(async_mode='asgi')
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins="*"
+)
+
 app = socketio.ASGIApp(sio, static_files={
     '/': 'main_test.html',
 })
-    
+
+
+
 @sio.event
 async def connect(sid, environ):
     print('connect ', sid)
