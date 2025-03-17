@@ -1,5 +1,5 @@
 import re
-from typing import Optional, TypedDict, List
+from typing import Optional, TypedDict, List, Dict
 from langgraph.graph import StateGraph, START, END
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
@@ -13,42 +13,88 @@ import uvicorn
 
 dotenv.load_dotenv()
 
-message_event = asyncio.Event()
+class SessionState(TypedDict):
+    session_id: str
+    history: Optional[List[str]]
+    current_question: Optional[str]
+    message_from_client: Optional[str]
+    personal_detail: Optional[dict]
+    more_3: Optional[dict]
+    less_3: Optional[dict]
+
+class UnifiedSession:
+    def __init__(self, sid: str):
+        self.state: SessionState = {
+            "session_id": sid,
+            "history": [],
+            "current_question": None,
+            "message_from_client": "",
+            "personal_detail": {
+                "full_name": None,
+                "company_name": None,
+                "company_address": None,
+                "phone_number": None,
+                "email": None,
+                "number_of_containers": None
+            },
+            "more_3": {
+                "number_of_containers": None,
+                "size": None,
+                "empty_or_loaded": None,
+                "pickup_address": None,
+                "delivery_address": None
+            },
+            "less_3": {
+                "number_of_containers": None,
+                "used_service_before": None,
+                "size": None,
+                "empty_or_loaded": None,
+                "hazardous": None,
+                "new_customer": None,
+                "corner_casting": None,
+                "protrusions_end_or_top": None,
+                "protrusions_long_side": None,
+                "pickup_address": None,
+                "lifting_setup": None,
+                "container_door_opening_pickup": None,
+                "pickup_surface_type": None,
+                "pickup_location_grade": None,
+                "delivery_address": None,
+                "dropping_setup": None,
+                "container_door_opening_drop_off": None,
+                "drop_off_surface_type": None,
+                "drop_off_location_grade": None
+            }
+        }
+        self.message_event = asyncio.Event()
+        
+        
+sessions: Dict[str, UnifiedSession] = {}
+
+
+
 
 def clean_json_response(response: str) -> str:
     # Extract JSON between ```json ... ```
     match = re.search(r"```json(.*?)```", response.strip(), re.DOTALL)
     return match.group(1).strip()
 
-class ShippingWorkflowState(TypedDict):
-    personal_detail: Optional[dict]  
-    more_3: Optional[dict] 
-    less_3: Optional[dict] 
-
-
-# --- Chat History Store ---
-# A global dictionary to store chat history per session.
-store = {}
-session_id = ""
-message_from_client = ""
 
 
 
-def get_by_session_id(session_id: str) -> List[str]:
-    if session_id not in store:
-        store[session_id] = []
-    return store[session_id]
-
-# For this example, we use a fixed session id.
+def get_session(sid: str) -> UnifiedSession:
+    if sid not in sessions:
+        sessions[sid] = UnifiedSession(sid)
+    return sessions[sid]
 
 
-def is_complete_personal_detail(state: ShippingWorkflowState) -> bool:
+def is_complete_personal_detail(state: SessionState) -> bool:
     personal_detail = all(state["personal_detail"].get(field) for field in ["full_name", "company_name", "company_address", "phone_number", "email","number_of_containers"])
 
 
     return  personal_detail
 
-def is_complete_more3(state: ShippingWorkflowState) -> bool:
+def is_complete_more3(state: SessionState) -> bool:
     required_fields = [ "size", "empty_or_loaded", "pickup_address", "delivery_address"]
     
     # Check if all required fields are present
@@ -64,7 +110,7 @@ def is_complete_more3(state: ShippingWorkflowState) -> bool:
 
 
 
-def is_complete_less3(state: ShippingWorkflowState) -> bool:
+def is_complete_less3(state: SessionState) -> bool:
     required_fields = ["number_of_containers",
     "used_service_before",
     "size",
@@ -382,18 +428,19 @@ Output only the JSON object.
 )
 
 
-# Global variable to hold the current question.
-current_question = None
 
 # --- Node Functions ---
 
-async def ask_question_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
+async def ask_question_node(state: SessionState) -> SessionState:
+    
+    session = get_session(state["session_id"])
+    
+    # print("Session: ", session)
+    # print("State: ", state)
     if is_complete_personal_detail(state):
         return state
 
-    # Retrieve session history and format as string.
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+    history_str = "\n".join(state["history"])
     
     # Format the prompt with the current state and chat history.
     formatted_prompt = question_prompt_personal_detail.format(history=history_str, current_state=state["personal_detail"])
@@ -404,37 +451,34 @@ async def ask_question_node(state: ShippingWorkflowState) -> ShippingWorkflowSta
         "current_state": state["personal_detail"]
     })
     
-    global current_question
-    current_question = response
-    
-    # Append the question to the chat history.
-    history.append("\nQuestion asked: " + response)
+    state["current_question"] = response
+    state["history"].append(f"Question asked: {response}")
     return state
 
-async def process_answer_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+async def process_answer_node(state: SessionState) -> SessionState:
+    session = get_session(state["session_id"])
+    history_str = "\n".join(state["history"])
     
-    await reply_to_client("Question from Chatbot: "+current_question)
-    # Ask the user for their input in response to the current question.
-    global message_from_client
-    await message_event.wait()  # this yields control back to the event loop
-    user_input = message_from_client
-    message_event.clear()
-    message_from_client = ""
+    await reply_to_client( "Question from Chatbot: " + state["current_question"])
+    
+    # Wait for user input
+    await session.message_event.wait()
+    user_input = session.message_from_client
+    session.message_event.clear()
+    state["message_from_client"] = ""
     
     
     # Format the state update prompt.
     formatted_prompt = state_update_prompt_personal_detail.format(
         history=history_str, current_state=state["personal_detail"],
-        question=current_question, response=user_input
+        question=state["current_question"], response=user_input
     )
     
     # Call the LLM to update the state.
     response = LLMChain(llm=llm, prompt=state_update_prompt_personal_detail).run({
         "history": history_str,
         "current_state": state["personal_detail"],
-        "question": current_question,
+        "question": state["current_question"],
         "response": user_input
     })
     
@@ -450,7 +494,7 @@ async def process_answer_node(state: ShippingWorkflowState) -> ShippingWorkflowS
         
         state["personal_detail"].update(new_state)
         
-        print("cuurent state: ", state)
+        print("current state: ", state)
         await state_json(state)
         
         # print("\nUpdated State: ", state)
@@ -462,58 +506,55 @@ async def process_answer_node(state: ShippingWorkflowState) -> ShippingWorkflowS
         print("Response:", cleaned_res)
     
     # Append the update to the chat history.
-    history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
+    state["history"].append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
     return state
 
-async def more_than_3_ask_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
-    if is_complete_more3(state):
-        return state
+async def more_than_3_ask_node(state: SessionState) -> SessionState:
+    session = get_session(state["session_id"])
+    if is_complete_more3(session.state):
+        return session.state
 
-    # Retrieve session history and format as string.
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+    history_str = "\n".join(state["history"])
     
     # Format the prompt with the current state and chat history.
-    formatted_prompt = question_prompt_more3.format(history=history_str, current_state=state["more_3"])
+    formatted_prompt = question_prompt_more3.format(history=history_str, current_state=session.state["more_3"])
     
     # Call the LLM to generate a question.
     response = LLMChain(llm=llm, prompt=question_prompt_more3).run({
         "history": history_str,
-        "current_state": state["more_3"]
+        "current_state": session.state["more_3"]
     })
     
-    global current_question
-    current_question = response
+    session.current_question = response
     
     # Append the question to the chat history.
-    history.append("\nQuestion asked: " + response)
-    return state
+    session.history.append("\nQuestion asked: " + response)
+    return session.state
 
-async def more_than_3_process_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+async def more_than_3_process_node(state: SessionState) -> SessionState:
+    session = get_session(state["session_id"])
+    history_str = "\n".join(state["history"])
     
+    await reply_to_client(session.sid, "Question from Chatbot: " + session.current_question)
     
-    await reply_to_client("Question from Chatbot: "+current_question)
-    # Ask the user for their input in response to the current question.
-    global message_from_client
-    await message_event.wait()  # this yields control back to the event loop
-    user_input = message_from_client
-    message_event.clear()
-    message_from_client = ""
+    # Wait for user input
+    await session.message_event.wait()
+    user_input = session.message_from_client
+    session.message_event.clear()
+    session.message_from_client = ""
     
     
     # Format the state update prompt.
     formatted_prompt = state_update_prompt_more3.format(
-        history=history_str, current_state=state["more_3"],
-        question=current_question, response=user_input
+        history=history_str, current_state=session.state["more_3"],
+        question=session.current_question, response=user_input
     )
     
     # Call the LLM to update the state.
     response = LLMChain(llm=llm, prompt=state_update_prompt_more3).run({
         "history": history_str,
-        "current_state": state["more_3"],
-        "question": current_question,
+        "current_state": session.state["more_3"],
+        "question": session.current_question,
         "response": user_input
     })
     
@@ -528,7 +569,7 @@ async def more_than_3_process_node(state: ShippingWorkflowState) -> ShippingWork
         
         # keys_to_exclude = {'empty_or_loaded', 'pickup_address', 'delivery_address'}
         # state.update({k: v for k, v in new_state.items() if k not in keys_to_exclude})
-        state["more_3"].update(new_state)
+        session.state["more_3"].update(new_state)
         
         await state_json(state)
         
@@ -538,56 +579,54 @@ async def more_than_3_process_node(state: ShippingWorkflowState) -> ShippingWork
         print("Response:", cleaned_res)
     
     # Append the update to the chat history.
-    history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
-    return state
+    session.history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
+    return session.state
 
-async def less_than_3_ask_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
-    if is_complete_less3(state):
-        return state
+async def less_than_3_ask_node(state: SessionState) -> SessionState:
+    session = get_session(state["session_id"])
+    if is_complete_less3(session.state):
+        return session.state
 
-    # Retrieve session history and format as string.
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+    history_str = "\n".join(state["history"])
     
     # Format the prompt with the current state and chat history.
-    formatted_prompt = question_prompt_less3.format(history=history_str, current_state=state["less_3"])
+    formatted_prompt = question_prompt_less3.format(history=history_str, current_state=session.state["less_3"])
     
     # Call the LLM to generate a question.
     response = LLMChain(llm=llm, prompt=question_prompt_less3).run({
         "history": history_str,
-        "current_state": state["less_3"]
+        "current_state": session.state["less_3"]
     })
     
-    global current_question
-    current_question = response
+    session.current_question = response
     
     # Append the question to the chat history.
-    history.append("\nQuestion asked: " + response)
-    return state
+    session.history.append("\nQuestion asked: " + response)
+    return session.state
 
-async def less_than_3_process_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
-    history = get_by_session_id(session_id)
-    history_str = "\n".join(history)
+async def less_than_3_process_node(state: SessionState) -> SessionState:
+    session = get_session(state["session_id"])
+    history_str = "\n".join(state["history"])
     
-    await reply_to_client("Question from Chatbot: "+current_question)
-    # Ask the user for their input in response to the current question.
-    global message_from_client
-    await message_event.wait()  # this yields control back to the event loop
-    user_input = message_from_client
-    message_event.clear()
-    message_from_client = ""
+    await reply_to_client(session.sid, "Question from Chatbot: " + session.current_question)
+    
+    # Wait for user input
+    await session.message_event.wait()
+    user_input = session.message_from_client
+    session.message_event.clear()
+    session.message_from_client = ""
     
     # Format the state update prompt.
     formatted_prompt = state_update_prompt_less3.format(
-        history=history_str, current_state=state["less_3"],
-        question=current_question, response=user_input
+        history=history_str, current_state=session.state["less_3"],
+        question=session.current_question, response=user_input
     )
     
     # Call the LLM to update the state.
     response = LLMChain(llm=llm, prompt=state_update_prompt_less3).run({
         "history": history_str,
-        "current_state": state["less_3"],
-        "question": current_question,
+        "current_state": session.state["less_3"],
+        "question": session.current_question,
         "response": user_input
     })
     
@@ -602,7 +641,7 @@ async def less_than_3_process_node(state: ShippingWorkflowState) -> ShippingWork
         
         # keys_to_exclude = {'empty_or_loaded', 'pickup_address', 'delivery_address'}
         # state.update({k: v for k, v in new_state.items() if k not in keys_to_exclude})
-        state["less_3"].update(new_state)
+        session.state["less_3"].update(new_state)
         
         await state_json(state)
         
@@ -612,16 +651,16 @@ async def less_than_3_process_node(state: ShippingWorkflowState) -> ShippingWork
         print("Response:", cleaned_res)
     
     # Append the update to the chat history.
-    history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
-    return state
+    session.history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
+    return session.state
 
-def workflow_complete_node(state: ShippingWorkflowState) -> ShippingWorkflowState:
+def workflow_complete_node(state: SessionState) -> SessionState:
     print("Workflow completed.")
     print("Final state:", state)
     return state
 
 # --- Conditional Routing Functions ---
-def route_after_ask_personal_detail(state: ShippingWorkflowState) -> str:
+def route_after_ask_personal_detail(state: SessionState) -> str:
     # print("in route_after_ask_personal_detail")
     if is_complete_personal_detail(state):
         if int(state["personal_detail"]["number_of_containers"]) >= 3:
@@ -632,7 +671,7 @@ def route_after_ask_personal_detail(state: ShippingWorkflowState) -> str:
         return "process_answer"
     
 
-def route_after_process_personal_detail(state: ShippingWorkflowState) -> str:
+def route_after_process_personal_detail(state: SessionState) -> str:
     # print("in route_after_process_personal_detail")
     if is_complete_personal_detail(state):
         if int(state["personal_detail"]["number_of_containers"]) >= 3:
@@ -642,21 +681,21 @@ def route_after_process_personal_detail(state: ShippingWorkflowState) -> str:
     else:
         return "ask_question"
 
-def route_after_ask_more3(state: ShippingWorkflowState) -> str:
+def route_after_ask_more3(state: SessionState) -> str:
     return "workflow_complete" if is_complete_more3(state) else "more_than_3_process"
 
-def route_after_process_more3(state: ShippingWorkflowState) -> str:
+def route_after_process_more3(state: SessionState) -> str:
     return "workflow_complete" if is_complete_more3(state) else "more_than_3_ask"
 
-def route_after_ask_less3(state: ShippingWorkflowState) -> str:
+def route_after_ask_less3(state: SessionState) -> str:
     return "workflow_complete" if is_complete_less3(state) else "less_than_3_process"
 
-def route_after_process_less3(state: ShippingWorkflowState) -> str:
+def route_after_process_less3(state: SessionState) -> str:
     return "workflow_complete" if is_complete_less3(state) else "less_than_3_ask"
 
 
 # --- Build the LangGraph State Graph ---
-workflow = StateGraph(ShippingWorkflowState)
+workflow = StateGraph(SessionState)
 workflow.add_node("ask_question", ask_question_node)
 workflow.add_node("process_answer", process_answer_node)
 workflow.add_node("more_than_3_ask", more_than_3_ask_node)
@@ -709,52 +748,8 @@ workflow.add_edge("workflow_complete", END)
 app_graph = workflow.compile()
 
 
-personal_detail: Optional[dict] = {
-"full_name": None,
-"company_name": None,
-"company_address": None,
-"phone_number": None,
-"email": None,
-"number_of_containers": None
-}
-
-more_3: Optional[dict] = {
-    "number_of_containers": None,
-    "size": None,  # Size of the containers
-    "empty_or_loaded": None,  # List of container statuses
-    "pickup_address": None,   # Pickup addresses for the containers
-    "delivery_address": None  # Delivery addresses for the containers
-}
-
-less_3: Optional[dict] = {
-    "number_of_containers": None,
-    "used_service_before": None,
-    "size": None,
-    "empty_or_loaded": None,
-    "hazardous": None,
-    "new_customer": None,
-    "corner_casting": None,
-    "protrusions_end_or_top": None,
-    "protrusions_long_side": None,
-    "pickup_address": None,
-    "lifting_setup": None,
-    "container_door_opening_pickup": None,
-    "pickup_surface_type": None,
-    "pickup_location_grade": None,
-    "delivery_address": None,
-    "dropping_setup": None,
-    "container_door_opening_drop_off": None,
-    "drop_off_surface_type": None,
-    "drop_off_location_grade": None
-}
 
 
-    # The final state will now have these steps as part of it.
-state: ShippingWorkflowState = {
-    "personal_detail": personal_detail,
-    "more_3": more_3,
-    "less_3": less_3
-}
 
 # sio = socketio.AsyncServer(async_mode='asgi')
 sio = socketio.AsyncServer(
@@ -770,33 +765,30 @@ app = socketio.ASGIApp(sio, static_files={
 
 @sio.event
 async def connect(sid, environ):
-    print('connect ', sid)
-    global session_id
-    session_id = sid
+    print(f'New connection: {sid}')
+    # Initialize session
+    get_session(sid)
     await sio.emit('sid', sid, room=sid)
     
 @sio.event
 async def disconnect(sid):
-    print('disconnect ', sid)
+    print(f'Disconnected: {sid}')
+    if sid in sessions:
+        del sessions[sid]
 
 
 
 @sio.event
 async def message(sid, data):
-    print('Message received from client:', data)
-    global message_from_client
-    message_from_client = data
-    # await reply_to_client(data)
-    # await sio.emit('reply', f"Server received: {data}", room=sid)
-    message_event.set()
+    session = get_session(sid)
+    session.message_from_client = data
+    session.message_event.set()
 
 @sio.event
 async def start_workflow(sid):
-    print('Starting workflow')
-    session_id = sid
-    global state
-    await app_graph.ainvoke(state,{"recursion_limit": 100})
-    print("Final state:", state)
+    session = get_session(sid)
+    print(f'Starting workflow for session: {sid}')
+    await app_graph.ainvoke(session.state, {"recursion_limit": 100})
     
 
 async def reply_to_client(message):
