@@ -4,6 +4,11 @@ from langgraph.graph import StateGraph, START, END
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse 
+
 import dotenv
 import json
 import asyncio
@@ -459,7 +464,7 @@ async def process_answer_node(state: SessionState) -> SessionState:
     session = get_session(state["session_id"])
     history_str = "\n".join(state["history"])
     
-    await reply_to_client( "Question from Chatbot: " + state["current_question"])
+    await reply_to_client(state["session_id"], "Question from Chatbot: " + state["current_question"])
     
     # Wait for user input
     await session.message_event.wait()
@@ -750,55 +755,66 @@ app_graph = workflow.compile()
 
 
 
+app = FastAPI()
 
 # sio = socketio.AsyncServer(async_mode='asgi')
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins="*"
 )
+socket_app = socketio.ASGIApp(sio)
 
-app = socketio.ASGIApp(sio, static_files={
-    '/': 'main_test.html',
-})
+
+# Mount WebSocket support onto FastAPI
+app.mount("/ws", socket_app)
+
+# Serve static files (HTML, CSS, JS)
+app.mount("/static", StaticFiles(directory="static",html=True), name="static")
+
+# Serve main page
+@app.get("/")
+async def root():
+    return FileResponse("static/main_test.html")
+
 
 
 
 @sio.event
-async def connect(sid, environ):
+async def connect(sid, environ, auth=None):
     print(f'New connection: {sid}')
     # Initialize session
     get_session(sid)
-    await sio.emit('sid', sid, room=sid)
-    
+    # ✅ Remove enter_room call - not needed for direct messaging
+    await sio.emit('sid', sid, room=sid)  # room=sid works by default
+
 @sio.event
 async def disconnect(sid):
+    """Handle user disconnection and clean up session data."""
     print(f'Disconnected: {sid}')
     if sid in sessions:
         del sessions[sid]
 
-
-
 @sio.event
 async def message(sid, data):
+    """Receive messages from the client and store them in the session."""
     session = get_session(sid)
     session.message_from_client = data
     session.message_event.set()
 
 @sio.event
 async def start_workflow(sid):
+    """Trigger workflow execution for the specific session."""
     session = get_session(sid)
     print(f'Starting workflow for session: {sid}')
     await app_graph.ainvoke(session.state, {"recursion_limit": 100})
-    
 
-async def reply_to_client(message):
-    await sio.emit('reply', message)
+async def reply_to_client(sid, message):
+    """Send responses to the specific client"""
+    await sio.emit('reply', message, room=sid)
 
-async def state_json(message):
-    await sio.emit('state_json', message)
-
+async def state_json(sid, message):
+    """Send state updates to the specific client"""
+    await sio.emit('state_json', message, room=sid)
 
 if __name__ == '__main__':
-    
     uvicorn.run(app)
-    

@@ -121,12 +121,11 @@
     </div>
 
     <script>
-
-        const sio = io();
+        const sio = io("/ws");
+        let sessionID = null; // Store the unique session ID
 
         sio.on('connect', () => {
             console.log('Connected to server');
-            start_workflow();
         });
 
         sio.on('disconnect', () => {
@@ -135,23 +134,27 @@
 
         sio.on('sid', (sid) => {
             console.log('Session ID:', sid);
-            // document.querySelector('.server_response').innerHTML += `<br>Session ID: ${sid}`;
+            sessionID = sid; // Save the session ID for future requests
+            start_workflow(); // Start the workflow once session is established
         });
 
         sio.on('reply', (message) => {
             console.log('Bot replied:', message);
-            addMessage('Bot ', message);
+            addMessage('Bot', message);
         });
 
         sio.on('state_json', (data) => {
             console.log('Received JSON data:', data);
-            // const parsedData = JSON.parse(data);
             displayJsonData(data);
         });
 
         function start_workflow() {
-            sio.emit('start_workflow');
-            console.log('Workflow started');
+            if (sessionID) {
+                sio.emit('start_workflow', sessionID); // Send workflow request with session ID
+                console.log('Workflow started for session:', sessionID);
+            } else {
+                console.log("Session ID not set. Can't start workflow.");
+            }
         }
 
         // Recursive function to generate a nested HTML tree from JSON data.
@@ -159,11 +162,9 @@
             let html = '<ul>';
             for (let key in obj) {
                 if (obj.hasOwnProperty(key)) {
-                    // Check if the value is an object (and not null) to recursively render it.
                     if (typeof obj[key] === 'object' && obj[key] !== null) {
                         html += '<li><span class="json-key">' + key + ':</span>' + generateHTML(obj[key]) + '</li>';
                     } else {
-                        // Display 'null' as a string for null values.
                         let value = (obj[key] === null) ? 'null' : obj[key];
                         html += '<li><span class="json-key">' + key + ':</span> <span class="json-value">' + value + '</span></li>';
                     }
@@ -173,92 +174,33 @@
             return html;
         }
 
-        // Function to display JSON data in the formatted tree view.
         function displayJsonData(data) {
             const htmlContent = generateHTML(data);
             document.getElementById('json-display').innerHTML = htmlContent;
         }
 
-        // Sample JSON data (converted to a valid JavaScript object)
-        const sampleData = {
-            "personal_detail": {
-                "full_name": "john doe",
-                "company_name": "ABC Inc.",
-                "company_address": "123 Main St, Dallas, TX 75201",
-                "phone_number": "555-123-4567",
-                "email": "jhondoe@gmail.com",
-                "number_of_containers": "4"
-            },
-            "more_3": {
-                "number_of_containers": "4",
-                "size": ["20 ft", "40 ft", "20 ft", "60 ft"],
-                "empty_or_loaded": ["loaded", "empty", "empty", "empty"],
-                "pickup_address": [
-                    "456 Elm St, Dallas, TX 75202",
-                    "456 Elm St, Dallas, TX 75202",
-                    "456 new york",
-                    "456 Elm St, Dallas, TX 75202"
-                ],
-                "delivery_address": [null, null, null, null]
-            },
-            "less_3": {
-                "number_of_containers": "4",
-                "used_service_before": null,
-                "size": null,
-                "empty_or_loaded": null,
-                "hazardous": null,
-                "new_customer": null,
-                "corner_casting": null,
-                "protrusions_end_or_top": null,
-                "protrusions_long_side": null,
-                "pickup_address": null,
-                "lifting_setup": null,
-                "container_door_opening_pickup": null,
-                "pickup_surface_type": null,
-                "pickup_location_grade": null,
-                "delivery_address": null,
-                "dropping_setup": null,
-                "container_door_opening_drop_off": null,
-                "drop_off_surface_type": null,
-                "drop_off_location_grade": null
-            }
-        };
-
-        // Display the formatted JSON data on page load.
-        displayJsonData(sampleData);
-
-        // Chat functionality
         const sendButton = document.getElementById('send-button');
         const userInput = document.getElementById('user-input');
         const chatWindow = document.getElementById('chat-window');
 
-        // Function to add messages to the chat window.
         function addMessage(sender, message) {
             const messageDiv = document.createElement('div');
             messageDiv.textContent = sender + ": " + message;
             messageDiv.style.marginBottom = "10px";
             chatWindow.appendChild(messageDiv);
-            // Auto-scroll to the bottom.
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
 
-        // Handle send button click.
         sendButton.addEventListener('click', function () {
             const message = userInput.value.trim();
-            if (message !== "") {
+            if (message !== "" && sessionID) {
                 addMessage("You", message);
-                // Emit the message to the server
-                if (message) {
-                    sio.emit('message', message); // Emit the message to the server
-                    console.log('Message sent to server:', message);
-                } else {
-                    console.log('Message is empty');
-                }
+                sio.emit('message', sessionID, message); // Send message with session ID
+                console.log('Message sent to server:', message);
                 userInput.value = "";
             }
         });
 
-        // Allow sending messages with the Enter key.
         userInput.addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
                 sendButton.click();
