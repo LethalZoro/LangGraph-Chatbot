@@ -29,8 +29,10 @@ class ShippingWorkflowState(TypedDict):
 # --- Chat History Store ---
 # A global dictionary to store chat history per session.
 store = {}
-session_id = "foo"
+session_id = ""
 message_from_client = ""
+
+
 
 def get_by_session_id(session_id: str) -> List[str]:
     if session_id not in store:
@@ -769,6 +771,8 @@ app = socketio.ASGIApp(sio, static_files={
 @sio.event
 async def connect(sid, environ):
     print('connect ', sid)
+    global session_id
+    session_id = sid
     await sio.emit('sid', sid, room=sid)
     
 @sio.event
