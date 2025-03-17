@@ -760,9 +760,9 @@ sio = socketio.AsyncServer(
     cors_allowed_origins="*"
 )
 
-# , static_files={'/': 'main_test.html',}
-
-app = socketio.ASGIApp(sio)
+app = socketio.ASGIApp(sio, static_files={
+    '/': 'main_test.html',
+})
 
 
 
