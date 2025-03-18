@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict
 import uuid
+from fastapi.middleware.cors import CORSMiddleware 
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -763,6 +764,13 @@ app_graph = workflow.compile()
 # Remove all socket.io related code
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins (or specify your frontend URL)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # Serve static files (HTML, CSS, JS)
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
