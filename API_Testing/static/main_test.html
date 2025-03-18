@@ -160,14 +160,15 @@
 
         // Recursive function to generate a nested HTML tree from JSON data
         function generateHTML(obj) {
+            const excludedKeys = ['history', 'current_question', 'message_from_client'];
             let html = '<ul>';
             for (let key in obj) {
-                if (obj.hasOwnProperty(key)) {
+                if (obj.hasOwnProperty(key) && !excludedKeys.includes(key)) {
                     if (typeof obj[key] === 'object' && obj[key] !== null) {
-                        html += '<li><span class="json-key">' + key + ':</span>' + generateHTML(obj[key]) + '</li>';
+                        html += `<li><span class="json-key">${key}:</span>${generateHTML(obj[key])}</li>`;
                     } else {
-                        let value = (obj[key] === null) ? 'null' : obj[key];
-                        html += '<li><span class="json-key">' + key + ':</span> <span class="json-value">' + value + '</span></li>';
+                        const value = obj[key] === null ? 'null' : obj[key];
+                        html += `<li><span class="json-key">${key}:</span> <span class="json-value">${value}</span></li>`;
                     }
                 }
             }
@@ -176,7 +177,15 @@
         }
 
         function displayJsonData(data) {
-            const htmlContent = generateHTML(data);
+            // Clone the data to avoid modifying the original object
+            const filteredData = { ...data };
+
+            // Remove the keys we want to exclude
+            delete filteredData.history;
+            delete filteredData.current_question;
+            delete filteredData.message_from_client;
+
+            const htmlContent = generateHTML(filteredData);
             document.getElementById('json-display').innerHTML = htmlContent;
         }
 
