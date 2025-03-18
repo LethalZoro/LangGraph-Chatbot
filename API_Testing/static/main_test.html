@@ -5,7 +5,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LangGraph Workflow Chatbot</title>
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         /* Basic reset and styling */
         * {
@@ -97,71 +96,69 @@
             color: #0077cc;
         }
     </style>
-
-
-</head>
-
-<body>
-    <div class="container">
-        <!-- Chat Section -->
-        <div class="chat-container">
-            <div class="chat-window" id="chat-window">
-                <!-- Chat messages will appear here -->
-            </div>
-            <div class="chat-input">
-                <input type="text" id="user-input" placeholder="Type your message..." />
-                <button id="send-button">Send</button>
-            </div>
-        </div>
-        <!-- JSON Data Section -->
-        <div class="json-container">
-            <h2>Data</h2>
-            <div id="json-display" class="json-tree"></div>
-        </div>
-    </div>
-
     <script>
-        sio = socketio.AsyncServer(
-            async_mode = 'asgi',
-            cors_allowed_origins = "*",
-            socketio_path = 'socket.io'
-        )
-        let sessionID = null; // Store the unique session ID
+        // Initialize variables
 
-        sio.on('connect', () => {
-            console.log('Connected to server');
-        });
+        let sessionID = null;
 
-        sio.on('disconnect', () => {
-            console.log('Disconnected from server');
-        });
+        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var wsUrl = `${protocol}//${window.location.host}/fastapi-ws`;
+        var ws = new WebSocket(wsUrl);
 
-        sio.on('sid', (sid) => {
-            console.log('Session ID:', sid);
-            sessionID = sid; // Save the session ID for future requests
-            start_workflow(); // Start the workflow once session is established
-        });
 
-        sio.on('reply', (message) => {
-            console.log('Bot replied:', message);
-            addMessage('Bot', message);
-        });
 
-        sio.on('state_json', (data) => {
-            console.log('Received JSON data:', data);
-            displayJsonData(data);
-        });
+        ws.onopen = function () {
+            console.log('WebSocket connected');
+            // startWorkflow();
+            console.log('Session ID:', sessionID);
+            // console.log('Connecting to WebSocket:', wsUrl);
+            console.log('Connecting to WebSocket:', ws);
 
-        function start_workflow() {
-            if (sessionID) {
-                sio.emit('start_workflow', sessionID); // Send workflow request with session ID
-                console.log('Workflow started for session:', sessionID);
-            } else {
+        };
+
+        ws.onmessage = function (event) {
+            console.log('WebSocket message received:', event.data);
+            try {
+                const data = JSON.parse(event.data);
+                switch (data.type) {
+                    case "connection":
+                        sessionID = data.sid;
+                        startWorkflow();
+                        break;
+                    case "reply":
+                        addMessage("Bot", data.content);
+                        break;
+                    case "state_json":
+                        displayJsonData(data.content);
+                        break;
+                }
+            } catch (e) {
+                // Handle non-JSON messages
+                console.log("Raw message:", event.data);
+            }
+        };
+
+
+
+        function startWorkflow() {
+            if (!sessionID) {
                 console.log("Session ID not set. Can't start workflow.");
+                return;
+            }
+
+            console.log('Starting workflow for session:', sessionID);
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "message",
+                    content: "start_workflow",
+                    sid: sessionID  // Use the sessionID received during connection
+                }));
+                console.log('Workflow started');
             }
         }
 
-        // Recursive function to generate a nested HTML tree from JSON data.
+        // Recursive function to generate a nested HTML tree from JSON data
         function generateHTML(obj) {
             let html = '<ul>';
             for (let key in obj) {
@@ -189,28 +186,67 @@
 
         function addMessage(sender, message) {
             const messageDiv = document.createElement('div');
+            const chatWindow = document.getElementById('chat-window');
             messageDiv.textContent = sender + ": " + message;
             messageDiv.style.marginBottom = "10px";
             chatWindow.appendChild(messageDiv);
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
 
-        sendButton.addEventListener('click', function () {
-            const message = userInput.value.trim();
-            if (message !== "" && sessionID) {
-                addMessage("You", message);
-                sio.emit('message', sessionID, message); // Send message with session ID
-                console.log('Message sent to server:', message);
-                userInput.value = "";
+        function sendMessage() {
+            const messageInput = document.getElementById('user-input');
+            const message = messageInput.value.trim();
+            if (message === "") {
+                console.log('Message NOT sent to server:', ws);
+                console.log('Message NOT sent to server:', message);
+                messageInput.value = ''; // Clear the input field
+                return;
             }
-        });
+            // console.log('Message my:', message);
+            addMessage("You", message);
 
-        userInput.addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') {
-                sendButton.click();
+            if (message) {
+                ws.send(JSON.stringify({
+                    type: "message",
+                    content: message,
+                    sid: sessionID  // Use the sessionID received during connection
+                }));
+                console.log('Message sent to server:', message);
+                messageInput.value = ''; // Clear the input field
             }
-        });
+            else {
+                console.error('WebSocket not connected');
+            }
+
+        };
+
+
     </script>
+
+
+</head>
+
+<body>
+    <div class="container">
+        <!-- Chat Section -->
+        <div class="chat-container">
+            <div class="chat-window" id="chat-window">
+                <!-- Chat messages will appear here -->
+            </div>
+            <div class="chat-input">
+                <input type="text" id="user-input" placeholder="Type your message..."
+                    onkeypress="if(event.keyCode == 13) sendMessage()">
+                <button onclick=" sendMessage()">Send</button>
+            </div>
+        </div>
+        <!-- JSON Data Section -->
+        <div class="json-container">
+            <h2>Data</h2>
+            <div id="json-display" class="json-tree"></div>
+        </div>
+    </div>
+
+
 </body>
 
 </html>

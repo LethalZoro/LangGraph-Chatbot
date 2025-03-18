@@ -5,6 +5,10 @@ from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
+from fastapi import WebSocket, WebSocketDisconnect
+from typing import Dict
+import uuid
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse 
@@ -12,7 +16,7 @@ from fastapi.responses import FileResponse
 import dotenv
 import json
 import asyncio
-import socketio
+
 import uvicorn
 
 
@@ -75,6 +79,7 @@ class UnifiedSession:
         
         
 sessions: Dict[str, UnifiedSession] = {}
+active_websockets: Dict[str, WebSocket] = {}
 
 
 
@@ -493,14 +498,14 @@ async def process_answer_node(state: SessionState) -> SessionState:
         new_state = new_json["updated_state"]
         # clear the ouput before printing
         # print("\nResponse from Chatbot: ", new_json["response"])
-        await reply_to_client("Response from Chatbot on the answer: "+new_json["response"])
+        await reply_to_client(state["session_id"],"Response from Chatbot on the answer: "+new_json["response"])
         
         
         
         state["personal_detail"].update(new_state)
         
-        print("current state: ", state)
-        await state_json(state)
+        #print("current state: ", state)
+        await state_json(state["session_id"],state)
         
         # print("\nUpdated State: ", state)
         if state["personal_detail"]["number_of_containers"] != None:
@@ -533,14 +538,14 @@ async def more_than_3_ask_node(state: SessionState) -> SessionState:
     session.current_question = response
     
     # Append the question to the chat history.
-    session.history.append("\nQuestion asked: " + response)
+    state["history"].append("\nQuestion asked: " + response)
     return session.state
 
 async def more_than_3_process_node(state: SessionState) -> SessionState:
     session = get_session(state["session_id"])
     history_str = "\n".join(state["history"])
     
-    await reply_to_client(session.sid, "Question from Chatbot: " + session.current_question)
+    await reply_to_client(state["session_id"], "Question from Chatbot: " + session.current_question)
     
     # Wait for user input
     await session.message_event.wait()
@@ -570,21 +575,21 @@ async def more_than_3_process_node(state: SessionState) -> SessionState:
         # clear the ouput before printing
         # print("\nResponse from Chatbot: ", new_json["response"])
         
-        await reply_to_client("Response from Chatbot on the answer: "+new_json["response"])
+        await reply_to_client(state["session_id"],"Response from Chatbot on the answer: "+new_json["response"])
         
         # keys_to_exclude = {'empty_or_loaded', 'pickup_address', 'delivery_address'}
         # state.update({k: v for k, v in new_state.items() if k not in keys_to_exclude})
         session.state["more_3"].update(new_state)
         
-        await state_json(state)
+        await state_json(state["session_id"],state)
         
-        print("\nUpdated State: ", state)
+        # print("\nUpdated State: ", state)
     except json.JSONDecodeError as e:
         print("Error decoding JSON:", e)
         print("Response:", cleaned_res)
     
     # Append the update to the chat history.
-    session.history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
+    state["history"].append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
     return session.state
 
 async def less_than_3_ask_node(state: SessionState) -> SessionState:
@@ -606,14 +611,14 @@ async def less_than_3_ask_node(state: SessionState) -> SessionState:
     session.current_question = response
     
     # Append the question to the chat history.
-    session.history.append("\nQuestion asked: " + response)
+    state["history"].append("\nQuestion asked: " + response)
     return session.state
 
 async def less_than_3_process_node(state: SessionState) -> SessionState:
     session = get_session(state["session_id"])
     history_str = "\n".join(state["history"])
     
-    await reply_to_client(session.sid, "Question from Chatbot: " + session.current_question)
+    await reply_to_client(state["session_id"], "Question from Chatbot: " + session.current_question)
     
     # Wait for user input
     await session.message_event.wait()
@@ -642,13 +647,13 @@ async def less_than_3_process_node(state: SessionState) -> SessionState:
         # clear the ouput before printing
         # print("\nResponse from Chatbot: ", new_json["response"])
         
-        await reply_to_client("Response from Chatbot on the answer: "+new_json["response"])
+        await reply_to_client(state["session_id"],"Response from Chatbot on the answer: "+new_json["response"])
         
         # keys_to_exclude = {'empty_or_loaded', 'pickup_address', 'delivery_address'}
         # state.update({k: v for k, v in new_state.items() if k not in keys_to_exclude})
         session.state["less_3"].update(new_state)
         
-        await state_json(state)
+        await state_json(state["session_id"],state)
         
         print("\nUpdated State: ", state)
     except json.JSONDecodeError as e:
@@ -656,7 +661,7 @@ async def less_than_3_process_node(state: SessionState) -> SessionState:
         print("Response:", cleaned_res)
     
     # Append the update to the chat history.
-    session.history.append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
+    state["history"].append("User Input: "+user_input+"Response from Chatbot: "+new_json["response"]+"\nUpdated State: " + cleaned_res)
     return session.state
 
 def workflow_complete_node(state: SessionState) -> SessionState:
@@ -755,67 +760,86 @@ app_graph = workflow.compile()
 
 
 
+# Remove all socket.io related code
 app = FastAPI()
 
-# sio = socketio.AsyncServer(async_mode='asgi')
-sio = socketio.AsyncServer(
-    async_mode='asgi',
-    cors_allowed_origins="*",
-    socketio_path='socket.io'  # Add this line
-)
-socket_app = socketio.ASGIApp(sio)
-
-
-# Mount WebSocket support onto FastAPI
-app.mount("/ws", socket_app)
-
 # Serve static files (HTML, CSS, JS)
-app.mount("/static", StaticFiles(directory="static",html=True), name="static")
+app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
-# Serve main page
 @app.get("/")
 async def root():
     return FileResponse("static/main_test.html")
 
+@app.websocket("/fastapi-ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    client_id = str(uuid.uuid4())
+    session = get_session(client_id)
+    active_websockets[client_id] = websocket
+    await websocket.send_json({
+            "type": "connection", 
+            "sid": client_id
+        })
+    print(f"Client connected: {client_id}")
+    try:
+        # Send client ID immediately after connection
+        
+        while True:
+            data = await websocket.receive_text()
+            print(f"Received message: {data}")
+            message = json.loads(data)
+            print(f"Message: {message.get('content')}")
+            if message.get("content") == "start_workflow":
+                #print(f"State before starting workflow: {session.state}")
+                asyncio.create_task(run_workflow(client_id, session.state))
+            else:
+                message = json.loads(data)
+                if message.get("sid") != client_id:
+                    print(f"Session ID mismatch for {client_id}")
+                    continue
+                
+                session.message_from_client = message.get("content", "")
+                # session.message_from_client = data
+                session.message_event.set()
+                print(f"Received message: {data}")
+    except WebSocketDisconnect:
+        print(f"Client disconnected: {client_id}")
+        if client_id in active_websockets:
+            del active_websockets[client_id]
+        if client_id in sessions:
+            del sessions[client_id]
+            
+async def run_workflow(session_id: str, state: SessionState):
+    try:
+        await app_graph.ainvoke(state, {"recursion_limit": 25})
+
+    except Exception as e:
+        print(f"Error in workflow: {e}")
+        await active_websockets[session_id].send_text(f"Error: {str(e)}")
 
 
 
-@sio.event
-async def connect(sid, environ, auth=None):
-    print(f'New connection: {sid}')
-    # Initialize session
-    get_session(sid)
-    # ✅ Remove enter_room call - not needed for direct messaging
-    await sio.emit('sid', sid, room=sid)  # room=sid works by default
+async def reply_to_client(sid: str, message: str):
+    """Send responses to the specific client via WebSocket"""
+    if sid in active_websockets:
+        try:
+            await active_websockets[sid].send_text(json.dumps({
+                "type": "reply",
+                "content": message
+            }))
+        except Exception as e:
+            print(f"Error sending WebSocket message: {e}")
 
-@sio.event
-async def disconnect(sid):
-    """Handle user disconnection and clean up session data."""
-    print(f'Disconnected: {sid}')
-    if sid in sessions:
-        del sessions[sid]
-
-@sio.event
-async def message(sid, data):
-    """Receive messages from the client and store them in the session."""
-    session = get_session(sid)
-    session.message_from_client = data
-    session.message_event.set()
-
-@sio.event
-async def start_workflow(sid):
-    """Trigger workflow execution for the specific session."""
-    session = get_session(sid)
-    print(f'Starting workflow for session: {sid}')
-    await app_graph.ainvoke(session.state, {"recursion_limit": 100})
-
-async def reply_to_client(sid, message):
-    """Send responses to the specific client"""
-    await sio.emit('reply', message, room=sid)
-
-async def state_json(sid, message):
-    """Send state updates to the specific client"""
-    await sio.emit('state_json', message, room=sid)
+async def state_json(sid: str, state_data: dict):
+    """Send state updates to the specific client via WebSocket"""
+    if sid in active_websockets:
+        try:
+            await active_websockets[sid].send_text(json.dumps({
+                "type": "state_json",
+                "content": state_data
+            }))
+        except Exception as e:
+            print(f"Error sending WebSocket state update: {e}")
 
 if __name__ == '__main__':
     uvicorn.run(app)
