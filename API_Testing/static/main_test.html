@@ -121,7 +121,11 @@
     </div>
 
     <script>
-        const sio = io("/ws");
+        sio = socketio.AsyncServer(
+            async_mode = 'asgi',
+            cors_allowed_origins = "*",
+            socketio_path = 'socket.io'
+        )
         let sessionID = null; // Store the unique session ID
 
         sio.on('connect', () => {

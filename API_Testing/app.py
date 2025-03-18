@@ -760,7 +760,8 @@ app = FastAPI()
 # sio = socketio.AsyncServer(async_mode='asgi')
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins="*"
+    cors_allowed_origins="*",
+    socketio_path='socket.io'  # Add this line
 )
 socket_app = socketio.ASGIApp(sio)
 
